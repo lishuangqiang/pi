@@ -2,9 +2,17 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed `readFile` from `GrepOperations`. The grep tool now takes context lines from ripgrep and no longer reads matched files itself ([#9276](https://github.com/earendil-works/pi/issues/9276))
+
 ### Added
 
 - `pi update` now lists each updated package with its npm version or git commit change, for example `npm:foo 1.2.0 -> 1.3.0`, and prints `Packages are already up to date` when nothing changed. `PackageManager.update()` reports each changed package as a new `result` progress event whose `message` holds that line ([#11707](https://github.com/earendil-works/pi/pull/11707))
+
+### Fixed
+
+- Fixed the grep tool running out of memory when `context` was set: it read every matched file whole to print the surrounding lines, so a few large log files could exhaust the heap. It now passes `--context` to ripgrep, prints overlapping context once, and shows UTF-16 files correctly with context ([#9276](https://github.com/earendil-works/pi/issues/9276), [#11423](https://github.com/earendil-works/pi/issues/11423))
 
 ## [1.5.0] - 2026-11-02
 
