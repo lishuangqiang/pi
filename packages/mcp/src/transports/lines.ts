@@ -18,7 +18,8 @@ export interface JsonRpcLineReaderOptions {
  */
 export class JsonRpcLineReader {
 	private readonly options: JsonRpcLineReaderOptions;
-	private stdoutBuffer = Buffer.alloc(0);
+	private stdoutChunks: Buffer[] = [];
+	private stdoutBytes = 0;
 	private stderrBuffer = Buffer.alloc(0);
 
 	constructor(options: JsonRpcLineReaderOptions) {
@@ -32,22 +33,39 @@ export class JsonRpcLineReader {
 
 	/** Takes the next stdout bytes and reports every complete message, or the error parsing it. */
 	readStdout(chunk: Uint8Array): void {
-		this.stdoutBuffer = Buffer.concat([this.stdoutBuffer, chunk]);
+		const buffer = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
 		const maxMessageBytes = this.options.maxMessageBytes ?? DEFAULT_MAX_MESSAGE_BYTES;
-		while (true) {
-			const newline = this.stdoutBuffer.indexOf(0x0a);
+		let start = 0;
+		while (start < buffer.length) {
+			// Previously received fragments contain no newline; scan only the new bytes.
+			const newline = buffer.indexOf(0x0a, start);
 			if (newline < 0) {
-				if (this.stdoutBuffer.length > maxMessageBytes) {
-					this.stdoutBuffer = Buffer.alloc(0);
+				const tail = buffer.subarray(start);
+				if (this.stdoutBytes + tail.length > maxMessageBytes) {
+					this.stdoutChunks = [];
+					this.stdoutBytes = 0;
 					this.options.onError(new Error(`MCP stdio message exceeds ${maxMessageBytes} bytes`));
+				} else {
+					this.stdoutChunks.push(tail);
+					this.stdoutBytes += tail.length;
 				}
 				return;
 			}
-			const line = this.stdoutBuffer.subarray(0, newline);
-			this.stdoutBuffer = this.stdoutBuffer.subarray(newline + 1);
-			if (line.length > maxMessageBytes) {
+			const fragment = buffer.subarray(start, newline);
+			start = newline + 1;
+			const lineBytes = this.stdoutBytes + fragment.length;
+			if (lineBytes > maxMessageBytes) {
+				this.stdoutChunks = [];
+				this.stdoutBytes = 0;
 				this.options.onError(new Error(`MCP stdio message exceeds ${maxMessageBytes} bytes`));
 				continue;
+			}
+			let line = fragment;
+			if (this.stdoutBytes > 0) {
+				this.stdoutChunks.push(fragment);
+				line = Buffer.concat(this.stdoutChunks, lineBytes);
+				this.stdoutChunks = [];
+				this.stdoutBytes = 0;
 			}
 			const text = line.toString("utf8").replace(/\r$/, "");
 			if (!text.trim()) continue;
@@ -69,9 +87,10 @@ export class JsonRpcLineReader {
 
 	/** Ends stdout: a message without its newline is reported as an error and dropped. */
 	end(): void {
-		if (this.stdoutBuffer.toString("utf8").trim()) {
+		if (this.stdoutBytes > 0 && Buffer.concat(this.stdoutChunks, this.stdoutBytes).toString("utf8").trim()) {
 			this.options.onError(new Error("MCP stdio server closed with an incomplete JSON-RPC message"));
 		}
-		this.stdoutBuffer = Buffer.alloc(0);
+		this.stdoutChunks = [];
+		this.stdoutBytes = 0;
 	}
 }
