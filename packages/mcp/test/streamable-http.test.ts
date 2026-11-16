@@ -177,6 +177,33 @@ describe("consumeSseStream", () => {
 		);
 		expect(cancelled).toBe(true);
 	});
+
+	// Regression test for #12224: a large event is copied once, not once per chunk.
+	it("parses a multi-megabyte event delivered in many chunks", async () => {
+		const encoder = new TextEncoder();
+		const total = 4 * 1024 * 1024;
+		let sent = 0;
+		const stream = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (sent === 0) {
+					controller.enqueue(encoder.encode("data: "));
+					sent = 6;
+					return;
+				}
+				if (sent < total) {
+					controller.enqueue(new Uint8Array(64 * 1024).fill(0x61));
+					sent += 64 * 1024;
+					return;
+				}
+				controller.enqueue(encoder.encode("\n\n"));
+				controller.close();
+			},
+		});
+		const events: SseEvent[] = [];
+		await consumeSseStream(stream, { maxEventBytes: total + 1024, onEvent: (event) => events.push(event) });
+		expect(events).toHaveLength(1);
+		expect(events[0]?.data.length).toBe(total);
+	});
 });
 
 describe("StreamableHttpTransport", () => {

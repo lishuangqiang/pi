@@ -41,7 +41,6 @@ export interface ConsumeSseOptions {
 export async function consumeSseStream(stream: ReadableStream<Uint8Array>, options: ConsumeSseOptions): Promise<void> {
 	const reader = stream.getReader();
 	const decoder = new TextDecoder();
-	let buffered = "";
 	let eventName: string | undefined;
 	let eventId: string | undefined;
 	let dataLines: string[] = [];
@@ -85,46 +84,67 @@ export async function consumeSseStream(stream: ReadableStream<Uint8Array>, optio
 		} else if (field === "retry" && /^\d+$/.test(value)) options.onRetry?.(Number(value));
 	};
 
-	// SSE lines end with CRLF, LF, or a lone CR.
-	let skipLeadingLf = false;
-	const consumeLines = () => {
+	// The current incomplete line, kept as the chunks that have not reached a line ending.
+	// Joining only when the line ends keeps a large event linear: an event that arrives in N
+	// chunks is copied once, not once per chunk.
+	let pendingLine: string[] = [];
+	let pendingLineBytes = 0;
+	// A CR at the end of a chunk may be the first half of a CRLF. The LF at the start of the
+	// next chunk must not start a second line.
+	let pendingCR = false;
+
+	const emitPendingLine = (segment: string) => {
+		if (pendingLine.length === 0) {
+			processLine(segment);
+			return;
+		}
+		if (segment.length > 0) pendingLine.push(segment);
+		const line = pendingLine.join("");
+		pendingLine = [];
+		pendingLineBytes = 0;
+		processLine(line);
+	};
+
+	const processText = (text: string) => {
 		let start = 0;
-		for (let i = 0; i < buffered.length; i++) {
-			const char = buffered[i];
-			if (char !== "\r" && char !== "\n") continue;
-			processLine(buffered.slice(start, i));
-			if (char === "\r") {
-				if (i + 1 < buffered.length) {
-					if (buffered[i + 1] === "\n") i++;
+		if (pendingCR && text.length > 0) {
+			if (text.charCodeAt(0) === 0x0a) start = 1;
+			pendingCR = false;
+		}
+		for (let i = start; i < text.length; i++) {
+			const code = text.charCodeAt(i);
+			if (code !== 0x0d && code !== 0x0a) continue;
+			emitPendingLine(text.slice(start, i));
+			if (code === 0x0d) {
+				if (i + 1 < text.length) {
+					if (text.charCodeAt(i + 1) === 0x0a) i++;
 				} else {
-					skipLeadingLf = true;
+					pendingCR = true;
 				}
 			}
 			start = i + 1;
 		}
-		buffered = buffered.slice(start);
+		if (start < text.length) {
+			const tail = text.slice(start);
+			pendingLine.push(tail);
+			pendingLineBytes += Buffer.byteLength(tail);
+			if (pendingLineBytes > maxEventBytes) throw new Error(`MCP SSE event exceeds ${maxEventBytes} bytes`);
+		}
 	};
 
 	try {
 		while (true) {
 			const { done, value } = await reader.read();
 			if (done) break;
-			let text = decoder.decode(value, { stream: true });
-			// A CRLF split across chunks: the CR already ended the line, so drop the LF.
-			if (skipLeadingLf && text.length > 0) {
-				if (text.startsWith("\n")) text = text.slice(1);
-				skipLeadingLf = false;
-			}
-			buffered += text;
-			consumeLines();
-			if (Buffer.byteLength(buffered) > maxEventBytes)
-				throw new Error(`MCP SSE event exceeds ${maxEventBytes} bytes`);
+			processText(decoder.decode(value, { stream: true }));
 		}
-		let tail = decoder.decode();
-		if (skipLeadingLf && tail.startsWith("\n")) tail = tail.slice(1);
-		buffered += tail;
-		consumeLines();
-		if (buffered) processLine(buffered);
+		processText(decoder.decode());
+		if (pendingLine.length > 0) {
+			const line = pendingLine.join("");
+			pendingLine = [];
+			pendingLineBytes = 0;
+			processLine(line);
+		}
 		dispatch();
 	} catch (error) {
 		// Releasing the lock alone leaves the response open; the original error wins over a failed cancel.
@@ -213,19 +233,20 @@ async function readBodyText(response: Response, maxBytes: number): Promise<{ tex
 	if (!response.body) return { text: "", truncated: false };
 	const reader = response.body.getReader();
 	const decoder = new TextDecoder();
-	let text = "";
+	const parts: string[] = [];
 	let remaining = maxBytes;
 	try {
 		while (true) {
 			const { done, value } = await reader.read();
-			if (done) return { text: text + decoder.decode(), truncated: false };
+			if (done) return { text: parts.join("") + decoder.decode(), truncated: false };
 			if (value.byteLength > remaining) {
 				await reader.cancel().catch(() => {});
 				// Decoding a subarray copies only the kept bytes, so the result never references the dropped rest.
-				return { text: text + decoder.decode(value.subarray(0, remaining), { stream: true }), truncated: true };
+				parts.push(decoder.decode(value.subarray(0, remaining), { stream: true }));
+				return { text: parts.join(""), truncated: true };
 			}
 			remaining -= value.byteLength;
-			text += decoder.decode(value, { stream: true });
+			parts.push(decoder.decode(value, { stream: true }));
 		}
 	} finally {
 		reader.releaseLock();
