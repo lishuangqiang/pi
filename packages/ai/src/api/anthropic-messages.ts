@@ -760,6 +760,7 @@ async function* iterateSseMessages(
 			yield trailingEvent;
 		}
 	} finally {
+		await reader.cancel().catch(() => {});
 		reader.releaseLock();
 	}
 }

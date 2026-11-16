@@ -733,4 +733,33 @@ describe("Anthropic raw SSE parsing", () => {
 		expect(result.errorMessage).toBeUndefined();
 		expect(result.content).toEqual([{ type: "text", text: "Hello" }]);
 	});
+
+	it("cancels the response body when an error event stops parsing", async () => {
+		let cancelled = false;
+		const encoder = new TextEncoder();
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(
+					encoder.encode(
+						`event: error\ndata: ${JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "overloaded" } })}\n\n`,
+					),
+				);
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const response = new Response(body, {
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+		});
+		const model = getModel("anthropic", "claude-haiku-4-5");
+		const result = await streamAnthropic(
+			model,
+			normalizeContext({ messages: [{ role: "user", content: "Hello", timestamp: 1 }] }),
+			{ client: createFakeAnthropicClient(response) },
+		).result();
+		expect(result.stopReason).toBe("error");
+		expect(cancelled).toBe(true);
+	});
 });

@@ -324,6 +324,7 @@ async function* readPiMessagesEvents(stream: ReadableStream<Uint8Array>): AsyncG
 			}
 		}
 	} finally {
+		await reader.cancel().catch(() => {});
 		reader.releaseLock();
 	}
 }

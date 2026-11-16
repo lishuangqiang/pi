@@ -322,4 +322,47 @@ describe("pi-messages api registration", () => {
 		const api: Api = "pi-messages";
 		expect(api).toBe("pi-messages");
 	});
+
+	it("cancels the response body after the terminal event", async () => {
+		let cancelled = false;
+		const encoder = new TextEncoder();
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				const events = [
+					{ type: "start" },
+					{ type: "text_start", contentIndex: 0 },
+					{ type: "text_delta", contentIndex: 0, delta: "Hi" },
+					{ type: "text_end", contentIndex: 0, content: "Hi" },
+					{
+						type: "done",
+						reason: "stop",
+						usage,
+						responseId: "resp_1",
+						responseModel: "claude-opus-5-5",
+						providerThinkingLevel: "high",
+					},
+				];
+				for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+				// Keep the body open: the reader should cancel it after the terminal event.
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const response = new Response(body, {
+			status: 200,
+			headers: { "content-type": "text/event-stream" },
+		});
+		const model = createModel("http://127.0.0.1:1/v1");
+		const eventStream = stream(model, normalizeContext(context), {
+			apiKey: "test-key",
+			fetch: async () => response,
+		});
+		for await (const _ of eventStream) {
+			// consume
+		}
+		const message = await eventStream.result();
+		expect(message.stopReason).toBe("stop");
+		expect(cancelled).toBe(true);
+	});
 });
