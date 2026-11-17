@@ -31,6 +31,8 @@ import {
 	type SelfUpdatePackageTarget,
 	VERSION,
 } from "./config.ts";
+import { createEventBus } from "./core/event-bus.ts";
+import { createExtensionRuntime, loadExtensionFromFactory } from "./core/extensions/loader.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
 import { DefaultPackageManager, isOfflineModeEnabled } from "./core/package-manager.ts";
@@ -622,7 +624,37 @@ function updateTargetIncludesExtensions(target: UpdateTarget): boolean {
 	return target.type === "all" || target.type === "extensions";
 }
 
-async function refreshModelCatalogs(agentDir: string): Promise<void> {
+/**
+ * Built-in extensions register their providers at runtime instead of shipping static catalogs, so a bare
+ * `ModelRuntime` cannot see them and their providers are skipped without a word.
+ */
+async function registerBuiltinExtensionProviders(
+	modelRuntime: ModelRuntime,
+	extensionFactories: readonly InlineExtension[],
+): Promise<void> {
+	const builtins = extensionFactories.filter(isBuiltinExtension);
+	if (builtins.length === 0) return;
+	const runtime = createExtensionRuntime();
+	const eventBus = createEventBus();
+	const cwd = process.cwd();
+	for (const input of builtins) {
+		await loadExtensionFromFactory(input.factory, cwd, eventBus, runtime, `builtin:${input.name}`);
+	}
+	for (const { provider } of runtime.pendingNativeProviderRegistrations) {
+		modelRuntime.registerNativeProvider(provider);
+	}
+	for (const { name, config } of runtime.pendingProviderRegistrations) {
+		modelRuntime.registerProvider(name, config);
+	}
+	for (const { definition } of runtime.pendingVirtualModelRegistrations) {
+		modelRuntime.registerVirtualModel(definition);
+	}
+}
+
+export async function refreshModelCatalogs(
+	agentDir: string,
+	extensionFactories: readonly InlineExtension[] = [],
+): Promise<void> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), 15_000);
 	try {
@@ -632,6 +664,7 @@ async function refreshModelCatalogs(agentDir: string): Promise<void> {
 			allowModelNetwork: false,
 			signal: controller.signal,
 		});
+		await registerBuiltinExtensionProviders(modelRuntime, extensionFactories);
 		const result = await modelRuntime.refresh({
 			allowNetwork: true,
 			force: true,
@@ -1024,7 +1057,7 @@ export async function handlePackageCommand(
 
 	if (options.command === "update" && options.updateTarget?.type === "models") {
 		try {
-			await refreshModelCatalogs(getAgentDir());
+			await refreshModelCatalogs(getAgentDir(), runtimeOptions.extensionFactories ?? []);
 		} catch (error: unknown) {
 			const message = error instanceof Error ? error.message : "Unknown model catalog refresh error";
 			console.error(chalk.red(`Error: ${message}`));
