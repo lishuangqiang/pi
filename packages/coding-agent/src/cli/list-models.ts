@@ -24,6 +24,18 @@ function formatTokenCount(count: number): string {
 }
 
 /**
+ * Providers that have credentials but listed no models, e.g. a llama.cpp router with nothing loaded.
+ */
+function configuredProvidersWithoutModels(modelRuntime: ModelRuntime): string[] {
+	return modelRuntime
+		.getProviders()
+		.filter(
+			(provider) => modelRuntime.hasConfiguredAuth(provider.id) && modelRuntime.getModels(provider.id).length === 0,
+		)
+		.map((provider) => provider.name);
+}
+
+/**
  * List available models, optionally filtered by search pattern
  */
 export async function listModels(
@@ -39,7 +51,7 @@ export async function listModels(
 	const models = [...(await modelRuntime.getAvailable(undefined, { signal }))];
 
 	if (models.length === 0) {
-		console.log(formatNoModelsAvailableMessage());
+		console.log(formatNoModelsAvailableMessage(configuredProvidersWithoutModels(modelRuntime)));
 		return;
 	}
 

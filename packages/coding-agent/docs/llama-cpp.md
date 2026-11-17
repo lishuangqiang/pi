@@ -123,6 +123,7 @@ curl http://127.0.0.1:9931/models
 
 - **No models in `/llama`:** Check `--models-dir`, the directory layout, and restart the router.
 - **Model missing from `/model` with `--no-models-autoload`:** Load it with `/llama` first.
+- **`pi --list-models` reports no models while the router answers `/health`:** The router has no loaded model. With `--models-dir`, run `/llama` to load one; logging in again does not add models.
 - **Load fails or uses too much memory:** Lower `-c` or unload another model.
 - **Server is not in router mode:** Start it without `--model`, `-m`, or `-hf`.
 

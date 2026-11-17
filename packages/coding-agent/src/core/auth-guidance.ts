@@ -11,8 +11,21 @@ export function getProviderLoginHelp(): string {
 	].join("\n");
 }
 
-export function formatNoModelsAvailableMessage(): string {
-	return `No models available. ${getProviderLoginHelp()}`;
+/**
+ * `providersWithoutModels` names providers that are already configured but expose no models. Telling
+ * those users to log in sends them looking for a credential that is not missing.
+ */
+export function formatNoModelsAvailableMessage(providersWithoutModels: readonly string[] = []): string {
+	if (providersWithoutModels.length === 0) {
+		return `No models available. ${getProviderLoginHelp()}`;
+	}
+	return [
+		"No models available. These providers are configured but expose no models:",
+		...providersWithoutModels.map((name) => `  ${name}`),
+		"Log in again only if your provider is missing from that list. See:",
+		`  ${join(getDocsPath(), "providers.md")}`,
+		`  ${join(getDocsPath(), "models.md")}`,
+	].join("\n");
 }
 
 export function formatNoModelSelectedMessage(): string {
