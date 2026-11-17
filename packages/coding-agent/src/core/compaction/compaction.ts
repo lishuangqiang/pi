@@ -856,9 +856,30 @@ function findProjectedCutPoint(
 	};
 }
 
+/**
+ * Compaction triggers once context passes `contextWindow - reserveTokens`. A tail that large or larger
+ * leaves nothing to summarize: every entry fits inside `keepRecentTokens`, so `prepareCompaction()`
+ * finds no cut point and automatic compaction silently does nothing. Lower the tail to half the
+ * threshold in exactly that case. A tail that already fits below the threshold is left alone, so
+ * windows large enough to keep the configured value are unaffected, and the value is never raised.
+ */
+export function fitKeepRecentTokens(
+	keepRecentTokens: number,
+	contextWindow: number | undefined,
+	reserveTokens: number,
+): number {
+	if (!contextWindow || contextWindow <= 0) return keepRecentTokens;
+	const threshold = contextWindow - reserveTokens;
+	// A window smaller than the reserve is broken on its own; leave it as configured.
+	if (threshold <= 0) return keepRecentTokens;
+	if (keepRecentTokens < threshold) return keepRecentTokens;
+	return Math.min(keepRecentTokens, Math.max(1, Math.floor(threshold / 2)));
+}
+
 export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
+	contextWindow?: number,
 ): CompactionPreparation | undefined {
 	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
 		return undefined;
@@ -882,7 +903,8 @@ export function prepareCompaction(
 	}
 	const boundaryEnd = projectedEntries.length;
 	const tokensBefore = estimateProjectedContextTokens(projection, pathEntries).tokens;
-	const cutPoint = findProjectedCutPoint(projectedEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
+	const keepRecentTokens = fitKeepRecentTokens(settings.keepRecentTokens, contextWindow, settings.reserveTokens);
+	const cutPoint = findProjectedCutPoint(projectedEntries, boundaryStart, boundaryEnd, keepRecentTokens);
 
 	const firstKeptEntry = projectedEntries[cutPoint.firstKeptEntryIndex]?.sourceEntry;
 	if (!firstKeptEntry?.id) return undefined;
@@ -918,7 +940,7 @@ export function prepareCompaction(
 		tokensBefore,
 		previousSummary,
 		fileOps,
-		settings,
+		settings: keepRecentTokens === settings.keepRecentTokens ? settings : { ...settings, keepRecentTokens },
 	};
 }
 

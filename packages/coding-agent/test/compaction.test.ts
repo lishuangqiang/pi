@@ -11,6 +11,7 @@ import {
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
 	findCutPoint,
+	fitKeepRecentTokens,
 	getLastAssistantUsage,
 	prepareCompaction,
 	shouldCompact,
@@ -652,4 +653,69 @@ describe.skipIf(!process.env.ANTHROPIC_OAUTH_TOKEN)("LLM summarization", () => {
 		console.log("Original messages:", loaded.messages.length);
 		console.log("After compaction:", reloaded.messages.length);
 	}, 60000);
+});
+
+describe("fitKeepRecentTokens", () => {
+	it("caps the tail below the threshold when the window is too small for it", () => {
+		// 32768 - 16384 = 16384 threshold; the default 20000 tail always overran it.
+		expect(fitKeepRecentTokens(20000, 32768, 16384)).toBe(8192);
+	});
+
+	it("leaves a tail that already fits", () => {
+		expect(fitKeepRecentTokens(20000, 200000, 16384)).toBe(20000);
+		expect(fitKeepRecentTokens(500, 32768, 16384)).toBe(500);
+		// A tail below the threshold can already be cut, even when it is close to it.
+		expect(fitKeepRecentTokens(1750, 2600, 400)).toBe(1750);
+	});
+
+	it("never raises a tail that is already at or below half the threshold", () => {
+		expect(fitKeepRecentTokens(20000, 20000, 18000)).toBe(1000);
+		expect(fitKeepRecentTokens(1, 1, 0)).toBe(1);
+	});
+
+	it("does not touch an unknown or self-broken window", () => {
+		expect(fitKeepRecentTokens(20000, 0, 16384)).toBe(20000);
+		expect(fitKeepRecentTokens(20000, undefined, 16384)).toBe(20000);
+		expect(fitKeepRecentTokens(20000, 10000, 16384)).toBe(20000);
+	});
+});
+
+describe("prepareCompaction on a small window", () => {
+	/** ~17000 estimated tokens: past the 16384 threshold, still inside the 20000 default tail. */
+	function sessionPastThresholdWithinDefaultTail(): SessionEntry[] {
+		const entries: SessionEntry[] = [];
+		for (let index = 0; index < 4; index++) {
+			entries.push(createMessageEntry(createUserMessage("u".repeat(8500))));
+			entries.push(createMessageEntry(createAssistantMessage("a".repeat(8500))));
+		}
+		return entries;
+	}
+
+	it("finds nothing to summarize when the window is not supplied", () => {
+		const entries = sessionPastThresholdWithinDefaultTail();
+
+		expect(prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS)).toBeUndefined();
+	});
+
+	it("cuts at the fitted tail when a 32768-token window is supplied", () => {
+		const entries = sessionPastThresholdWithinDefaultTail();
+		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS, 32768);
+
+		expect(preparation).toBeDefined();
+		expect(preparation?.messagesToSummarize.length).toBeGreaterThan(0);
+		expect(preparation?.settings.keepRecentTokens).toBe(8192);
+		expect(preparation?.firstKeptEntryId).toBe(entries[entries.length - 4].id);
+	});
+
+	it("uses the configured tail unchanged on a window large enough for it", () => {
+		const entries: SessionEntry[] = [];
+		for (let index = 0; index < 10; index++) {
+			entries.push(createMessageEntry(createUserMessage("u".repeat(45000))));
+			entries.push(createMessageEntry(createAssistantMessage("a".repeat(45000))));
+		}
+		const preparation = prepareCompaction(entries, DEFAULT_COMPACTION_SETTINGS, 100000);
+
+		expect(preparation?.settings.keepRecentTokens).toBe(20000);
+		expect(preparation?.messagesToSummarize.length).toBeGreaterThan(0);
+	});
 });

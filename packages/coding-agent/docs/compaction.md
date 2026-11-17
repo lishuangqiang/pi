@@ -432,7 +432,7 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 |---------|---------|-------------|
 | `enabled` | `true` | Enable auto-compaction |
 | `reserveTokens` | `16384` | Free context tokens below which auto-compaction starts |
-| `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
+| `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized). Lowered to half of `contextWindow - reserveTokens` when the configured value is that large, because a tail this big would leave nothing to summarize |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
 

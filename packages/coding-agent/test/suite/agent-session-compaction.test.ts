@@ -549,6 +549,42 @@ describe("AgentSession compaction characterization", () => {
 		},
 	);
 
+	// #12076: the configured tail (3000) was larger than the threshold (2600 - 400), so every entry fit
+	// inside it and the threshold compaction found nothing to summarize.
+	it("compacts when the configured tail exceeds the compaction threshold", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { enabled: true, keepRecentTokens: 3000, reserveTokens: 400 } },
+			models: [{ id: "faux-1", contextWindow: 2600, maxTokens: 100 }],
+		});
+		harnesses.push(harness);
+		useSummaryStreamFn(harness, "summary of the earlier turn");
+
+		const now = Date.now();
+		for (let index = 0; index < 2; index++) {
+			harness.sessionManager.appendMessage({
+				role: "user",
+				content: [{ type: "text", text: `u${index}:${"u".repeat(2790)}` }],
+				timestamp: now - 4000 + index * 2000,
+			});
+			const assistant = createAssistant(harness, {
+				stopReason: "stop",
+				totalTokens: 700,
+				timestamp: now - 3000 + index * 2000,
+			});
+			assistant.content = [{ type: "text", text: `a${index}:${"a".repeat(2790)}` }];
+			harness.sessionManager.appendMessage(assistant);
+		}
+		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
+
+		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+		await sessionInternals._runAutoCompaction("threshold", false);
+		expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({
+			reason: "threshold",
+			aborted: false,
+			result: { summary: "summary of the earlier turn" },
+		});
+	});
+
 	it("includes steering queued during compaction in the resumed assistant request", async () => {
 		const largeTool: AgentTool = {
 			name: "large_result",

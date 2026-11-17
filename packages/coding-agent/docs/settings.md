@@ -72,7 +72,7 @@ CLI tool options override this setting for one invocation. `--tools` with only `
 |---|---|---|---|
 | `compaction.enabled` | boolean | `true` | Enable automatic compaction. |
 | `compaction.reserveTokens` | number | `16384` | Free context tokens below which automatic compaction starts. |
-| `compaction.keepRecentTokens` | number | `20000` | Recent tokens retained without summarization. |
+| `compaction.keepRecentTokens` | number | `20000` | Recent tokens retained without summarization. Lowered to half of `contextWindow - reserveTokens` for models whose window cannot hold the configured tail. |
 | `compaction.modelOverrides` | object | None | Per-model token settings keyed by exact `provider/modelId`. |
 
 <a id="per-model-compaction-overrides"></a>
