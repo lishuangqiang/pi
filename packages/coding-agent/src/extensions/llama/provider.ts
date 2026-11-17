@@ -36,12 +36,24 @@ async function resolveServerUrl(
 	return configured ? normalizeLlamaServerUrl(configured) : undefined;
 }
 
+/**
+ * Models that serve text or decisions. llama.cpp reads this from the GGUF metadata, so it is reported for
+ * unloaded models too. Servers that omit `architecture` are assumed to serve requests.
+ */
+function servesRequests(model: LlamaModelInfo): boolean {
+	const outputModalities = model.architecture?.output_modalities;
+	if (outputModalities === undefined) return true;
+	return outputModalities.includes("text") || outputModalities.includes("decisions");
+}
+
 function modelIsSelectable(model: LlamaModelInfo, routerAutoload: boolean): boolean {
 	if (model.status.value === "loaded") return true;
 	// llama.cpp reports idle-slept models as "sleeping"; requests wake them automatically.
 	if (model.status.value === "sleeping") return true;
-	// Unloaded presets are routable only when llama.cpp router autoload can load them on first use.
-	return routerAutoload && model.status.value === "unloaded" && !model.status.failed && model.source === "preset";
+	// With router autoload on, llama.cpp loads any model it lists on first use, whatever its source:
+	// router_validate_model() only checks that the model exists. Presets, --models-dir entries and the
+	// download cache are routable alike, so limiting this to presets hid models the server would serve.
+	return routerAutoload && model.status.value === "unloaded" && !model.status.failed && servesRequests(model);
 }
 
 async function routerAutoloadEnabled(
@@ -49,7 +61,7 @@ async function routerAutoloadEnabled(
 	catalog: readonly LlamaModelInfo[],
 	signal: AbortSignal,
 ): Promise<boolean> {
-	if (!catalog.some((model) => model.status.value === "unloaded" && model.source === "preset")) return false;
+	if (!catalog.some((model) => model.status.value === "unloaded" && !model.status.failed)) return false;
 	try {
 		return (await client.props({ signal })).models_autoload === true;
 	} catch {
@@ -261,7 +273,7 @@ export function createLlamaProvider(): LlamaProviderController {
 			const routerAutoload = await routerAutoloadEnabled(client, catalog, context.signal);
 			if (context.signal.aborted) return;
 			const selectable = catalog.filter((model) => modelIsSelectable(model, routerAutoload));
-			// Only loaded models expose their chat template without side effects. Unloaded autoload presets would
+			// Only loaded models expose their chat template without side effects. Unloaded autoload models would
 			// need to be loaded, while querying sleeping models may wake them. Those models remain without thinking
 			// support until they are loaded and a later catalog refresh discovers it. Decision models need no
 			// template, and llama.cpp reports them in the catalog regardless of their status.

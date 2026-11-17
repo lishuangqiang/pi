@@ -294,7 +294,7 @@ describe("llama.cpp extension", () => {
 		expect(storedContextWindows()).toEqual([32768, 32768]);
 	});
 
-	it("exposes unloaded presets only when router autoload is enabled", async () => {
+	it("exposes unloaded router models when autoload can load them", async () => {
 		let propsRequests = 0;
 		const { url } = await listen((request, response) => {
 			expect(request.headers.authorization).toBe("Bearer local");
@@ -305,6 +305,12 @@ describe("llama.cpp extension", () => {
 						{ id: "failed-preset", status: { value: "unloaded", failed: true }, source: "preset" },
 						{ id: "cache", status: { value: "unloaded" }, source: "cache" },
 						{ id: "models-dir", status: { value: "unloaded" }, source: "models_dir" },
+						{
+							id: "embedding",
+							status: { value: "unloaded" },
+							source: "models_dir",
+							architecture: { output_modalities: ["embeddings"] },
+						},
 					],
 				});
 				return;
@@ -334,11 +340,49 @@ describe("llama.cpp extension", () => {
 		});
 
 		expect(propsRequests).toBe(1);
-		expect(controller.provider.getModels().map((model) => model.id)).toEqual(["preset"]);
+		expect(controller.provider.getModels().map((model) => model.id)).toEqual(["preset", "cache", "models-dir"]);
 		expect(cachedEntry?.models.map((model) => [model.id, model.api])).toEqual([
 			["preset", "openai-completions"],
+			["cache", "openai-completions"],
+			["models-dir", "openai-completions"],
 			["preset", "llama-cpp-classify"],
+			["cache", "llama-cpp-classify"],
+			["models-dir", "llama-cpp-classify"],
 		]);
+	});
+
+	// A router started with --models-dir only has no preset, which used to skip the autoload check entirely.
+	it("exposes unloaded models_dir entries without any preset", async () => {
+		let propsRequests = 0;
+		const { url } = await listen((request, response) => {
+			if (request.url === "/models") {
+				json(response, {
+					data: [{ id: "qwen3", status: { value: "unloaded" }, source: "models_dir", meta: { n_ctx: 32768 } }],
+				});
+				return;
+			}
+			if (request.url === "/props") {
+				propsRequests++;
+				json(response, { role: "router", models_autoload: true });
+				return;
+			}
+			response.writeHead(404).end();
+		});
+
+		const controller = createLlamaProvider();
+		await controller.provider.refreshModels?.({
+			credential: { type: "api_key", key: "local", env: { LLAMA_BASE_URL: url } },
+			stored: undefined,
+			publish: async (publication) => {
+				publication.update?.();
+				return true;
+			},
+			allowNetwork: true,
+			signal: new AbortController().signal,
+		});
+
+		expect(propsRequests).toBe(1);
+		expect(controller.provider.getModels().map((model) => model.id)).toEqual(["qwen3"]);
 	});
 
 	it("classifies with selectable models through llama-server", async () => {
